@@ -6,6 +6,8 @@ NC    = \033[0m
 TEMPORAL_COMPOSE = docker-compose.temporal.yaml
 CD_COMPOSE       = docker-compose.yaml
 HEALTHZ_URL      = http://localhost:7082/api/healthz
+TEMPORAL_PROJECT = smc-temporal
+TRAEFIK_NETWORK  = smc-traefik
 
 # ---------------------------------------------------------------------------
 # Default target
@@ -80,13 +82,43 @@ ps:
 	@docker compose -f $(TEMPORAL_COMPOSE) ps
 
 healthz:
-	@echo -e ":: $(GREEN)Probing $(HEALTHZ_URL)...$(NC)"
+	@echo -e ":: $(GREEN)Probing api /api/healthz (from inside the container)...$(NC)"
 	@for i in 1 2 3 4 5; do \
-		curl -fsS $(HEALTHZ_URL) > /dev/null && \
-			echo -e "==> $(BLUE)healthz ok$(NC)" && exit 0; \
+		docker exec deployment-api wget -qO- http://localhost:7082/api/healthz >/dev/null 2>&1 \
+			&& echo -e "==> $(BLUE)healthz ok$(NC)" && exit 0; \
 		echo "  attempt $$i/5 failed, retrying in 2s..."; sleep 2; \
 	done; \
 	echo -e "==> $(RED)healthz failed after 5 attempts$(NC)"; exit 1
+
+# ---------------------------------------------------------------------------
+# boots / tears down the full all-in-Docker stack in
+# the right order (Temporal first, then api+worker)
+# ---------------------------------------------------------------------------
+
+cd-up: net-init temporal-up cd-service-up healthz
+	@echo -e "==> $(BLUE)Stack up.$(NC)"
+	@echo -e "    api      : reachable only inside the smc-traefik / temporal-network Docker networks"
+	@echo -e "               (probe with: docker exec deployment-api wget -qO- http://localhost:7082/api/healthz)"
+	@echo -e "    Temporal : http://localhost:7080  (UI publishes a host port)"
+
+cd-down:
+	@echo -e ":: $(GREEN)Stopping CD-service api + worker...$(NC)"
+	@docker compose -f $(CD_COMPOSE) down
+	@echo -e ":: $(GREEN)Stopping Temporal stack (project=$(TEMPORAL_PROJECT))...$(NC)"
+	@docker compose -f $(TEMPORAL_COMPOSE) -p $(TEMPORAL_PROJECT) down
+
+net-init:
+	@docker network inspect $(TRAEFIK_NETWORK) >/dev/null 2>&1 \
+		|| docker network create $(TRAEFIK_NETWORK)
+
+temporal-up:
+	@echo -e ":: $(GREEN)Starting Temporal stack (project=$(TEMPORAL_PROJECT))...$(NC)"
+	@docker compose -f $(TEMPORAL_COMPOSE) -p $(TEMPORAL_PROJECT) up -d --wait temporal temporal-ui
+	@echo -e "==> $(BLUE)Temporal ready (server healthy per compose)$(NC)"
+
+cd-service-up:
+	@echo -e ":: $(GREEN)Starting CD-service api + worker...$(NC)"
+	@docker compose -f $(CD_COMPOSE) up -d --build
 
 # ---------------------------------------------------------------------------
 # Webhook test targets — exercise a running CD-service from the operator
@@ -108,4 +140,5 @@ send-cleanup:
 
 .PHONY: all prepare build build-api build-worker run-api run-worker clean \
 	deploy deploy-temporal deploy-cd-service deploy-api deploy-worker \
-	logs ps healthz send-deploy send-cleanup
+	logs ps healthz send-deploy send-cleanup \
+	cd-up cd-down net-init temporal-up cd-service-up

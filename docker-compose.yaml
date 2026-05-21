@@ -5,8 +5,6 @@ services:
       dockerfile: Dockerfile
     container_name: deployment-api
     command: ["/app/api"]
-    ports:
-      - "7082:7082"
     env_file:
       - .env  # Load environment variables from .env file (optional, won't fail if missing)
     environment:
@@ -19,6 +17,14 @@ services:
     networks:
       - deployment-net
       - temporal-network
+      - smc-traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=smc-traefik"
+      - "traefik.http.routers.cd.rule=Host(`cd.${DOMAIN}`)"
+      - "traefik.http.routers.cd.entrypoints=websecure"
+      - "traefik.http.routers.cd.tls.certresolver=cloudflare"
+      - "traefik.http.services.cd.loadbalancer.server.port=7082"
     restart: unless-stopped
 
   worker:
@@ -49,3 +55,6 @@ networks:
   temporal-network:
     external: true
     name: temporal-network
+  smc-traefik:
+    external: true
+    name: smc-traefik
