@@ -2,15 +2,14 @@
 
 A CD (Continuous Deployment) service built with Go and the Temporal SDK.
 
-## POC scope
+## Current Status
 
 Out of scope
-- **Cloudflare DNS** — to be stripped from `internal/adapter/cloudflare/`.
-  `post.setup_domain` / `post.cleanup_domain` accepted but no-op.
-- **Traefik** — not used. Inbound for GitHub Actions is a Cloudflare
-  Tunnel terminating at `cd-service:7082` on the internal Docker
-  network. No public host port. See `ref/deploy_pipeline.md §2.4`.
-- **OpenTelemetry** — observability stack not wired up for the POC.
+- **Infisical** — adapter directory removed; `setup.inject_secret`
+  accepted but no-op.
+- **Cloudflare DNS** — adapter directory removed; `post.setup_domain`
+  / `post.cleanup_domain` accepted but no-op.
+- **OpenTelemetry** — observability stack not wired up yet.
 
 Kept:
 
@@ -20,8 +19,9 @@ Kept:
   `.deploy/<env>/deploy.sh` lands; until then, callers set
   `post.notify_discord.notify_only=true` — see "Notify-only short-circuit").
 - **Discord notifications** (via Discord Bot API, not webhook).
-- **Cloudflare Tunnel** (`cloudflared` container) for GH-Actions
-  inbound.
+- **Traefik-on-Server ingress** The `api` service joins the shared external `smc-traefik` network with
+  labels routing `cd.${DOMAIN}` → container `:7082`. No host port is
+  published from this compose project.
 
 ### Notify-only short-circuit (temporary)
 
@@ -30,15 +30,14 @@ real to do. To exercise the Discord notification path end-to-end
 without faking a green SSH step, `CDWorkflow` honors
 `post.notify_discord.notify_only` — when true, secrets/SSH/DNS are
 skipped and only the Discord activity runs. The flag is deleted once
-real SSH deploys land. Full rationale and retirement plan:
-`ref/deploy_pipeline.md §2.5`.
+real SSH deploys land.
 
 ## Architecture
 
 - **Domain Layer**: core logic and interfaces
 - **Workflow Layer**: Temporal workflow orchestration
 - **Activity Layer**: individual deployment steps
-- **Adapter Layer**: external service integrations (only `ssh/` + `discord/` for the POC)
+- **Adapter Layer**: external service integrations (only `ssh/` + `discord/`)
 - **API Layer**: HTTP handlers and middleware
 
 ## Project Structure
@@ -52,14 +51,14 @@ deploy/
 │   ├── domain/       # Domain models and interfaces
 │   ├── workflow/     # Temporal workflows
 │   ├── activity/     # Temporal activities
-│   ├── adapter/      # External service adapters (POC: ssh, discord)
+│   ├── adapter/      # External service adapters (ssh, discord)
 │   ├── config/       # Configuration management
 │   ├── handler/      # HTTP handlers
 │   ├── middleware/   # HTTP middleware
 │   └── logger/       # Logger utilities
 ├── scripts/                       # send-webhook, setup-postgres-es, create-namespace
 ├── config.example.yaml
-├── docker-compose.yaml            # API and Worker services (host :7082)
+├── docker-compose.yaml            # api + worker (no host port published — Traefik routes via smc-traefik network)
 ├── docker-compose.temporal.yaml   # Temporal infrastructure (UI :7080, gRPC :7233)
 ├── Dockerfile                     # EXPOSE 7082
 ├── Makefile
@@ -69,11 +68,6 @@ deploy/
 ## Configuration
 
 Copy `config.example.yaml` to `config.yaml` and configure:
-
-
-> Upstream's `infisical:` and `cloudflare:` blocks are present in
-> `config.example.yaml` but unused in the POC. Leave them blank or remove
-> them once the adapters are stripped.
 
 ### SSH Private Key Configuration
 
@@ -106,47 +100,55 @@ cp .env.example .env
 
 ## Running Locally
 
-### Step 1: Start Temporal Infrastructure
+The recommended one-word path is `make cd-up`. It boots the full
+all-in-Docker stack in the right order:
 
 ```bash
-docker compose -f docker-compose.temporal.yaml up -d
+make cd-up      # net-init → Temporal stack (project=smc-temporal, compose --wait)
+                #         → api + worker → in-container healthz
+make cd-down    # tear down api/worker, then Temporal
 ```
 
-This will start:
-
-- Temporal Server (gRPC) on host port `7233`
-- Temporal UI on host port `7080`
-- PostgreSQL for Temporal — **internal Docker network only** (not published to host)
-- Elasticsearch for Temporal visibility — **internal Docker network only** (not published to host)
-
-### Step 2: Start API and Worker Services
-
-Option A — using Docker Compose:
+Sequence matters — the api crash-loops if `temporal:7233` isn't reachable
+yet, so `cd-up` waits for Temporal's compose healthcheck before starting
+api/worker. After `cd-up` returns, the api is reachable on the
+`smc-traefik` and `temporal-network` Docker networks but **not on a host
+port** — probe it with:
 
 ```bash
-docker compose up -d
+docker exec deployment-api wget -qO- http://localhost:7082/api/healthz
+# or:
+make healthz
 ```
 
-Option B — running locally:
+Temporal UI publishes a host port and works normally at
+<http://localhost:7080>.
+
+### Host-Go dev path (alternative)
+
+If you want the Go binaries on the host instead of in Docker — for fast
+iteration / debugger attach — bring up just Temporal in Docker and run
+api/worker on the host:
 
 ```bash
-# Start API (binds to PORT env / config.yaml's server.port; default 7082)
-go run cmd/api/main.go
-
-# Start Worker (in another terminal)
-go run cmd/worker/main.go
+make temporal-up          # only the Temporal stack
+make run-api              # Terminal 1
+make run-worker           # Terminal 2
 ```
+
+The host-Go path binds api to `localhost:7082` directly (no Docker
+network indirection), so plain `curl http://localhost:7082/api/healthz`
+works in this mode.
 
 ## Service Ports
 
 All temporal-family ports live in the `7xxx` range so they stay clear of
-the SMC frontend on host `8080`. **Host port == container port** everywhere
-so there is no host/container confusion. See the SMC root `README.md
-§Ports` for the full table including the frontend.
+the SMC frontend on host `8080`. See the SMC root `README.md §Ports`
+for the full table including the frontend.
 
 | Service                  | Container (internal) | Host (external) | Compose file                   | Notes                                              |
 |--------------------------|----------------------|-----------------|--------------------------------|----------------------------------------------------|
-| **API Service**          | `7082`               | `7082`          | `docker-compose.yaml`          | `Dockerfile` `EXPOSE 7082`; container binds `0.0.0.0:7082`, published as `7082:7082` |
+| **API Service**          | `7082`               | (unpublished)   | `docker-compose.yaml`          | `Dockerfile` `EXPOSE 7082`; container binds `0.0.0.0:7082`. **No host port** — Traefik routes `cd.${DOMAIN}` → `api:7082` over the shared `smc-traefik` Docker network. |
 | **Worker**               | — (no port)          | — (no port)     | `docker-compose.yaml`          | Polls Temporal outbound only; no inbound port published |
 | **Temporal Server**      | `7233`               | `7233`          | `docker-compose.temporal.yaml` | gRPC frontend for SDK clients                      |
 | **Temporal UI**          | `7080`               | `7080`          | `docker-compose.temporal.yaml` | Web UI at `http://localhost:7080` — `TEMPORAL_UI_PORT=7080` set on the container |
@@ -154,70 +156,81 @@ so there is no host/container confusion. See the SMC root `README.md
 | **Elasticsearch**        | `9200`               | (unpublished)   | `docker-compose.temporal.yaml` | Internal Docker network only; reached by service name `elasticsearch`. Frees host `9200`. |
 | **Temporal admin-tools** | — (no port)          | — (no port)     | `docker-compose.temporal.yaml` | One-shot setup container (schema + namespace)      |
 | **temporal-create-namespace** | — (no port)     | — (no port)     | `docker-compose.temporal.yaml` | One-shot container that creates the `default` namespace |
-| **cloudflared (tunnel)** | — (outbound)         | — (outbound)    | `docker-compose.yaml`          | Registers outbound to Cloudflare; terminates `https://cd.<yourdomain>.xyz` and forwards to `cd-service:7082` on the internal Docker network. Token via `CF_TUNNEL_TOKEN` in `.env`. |
+| **Traefik edge (SMC-Infra)** | — | `:80` / `:443` on the deploy host | (sibling repo) | `SMC-Infra/core/traefik/docker-compose.yaml` owns the edge. This compose project does not publish `:7082`; Traefik dials `api:7082` over `smc-traefik`. |
 
 ### Quick reference (host ports)
 
 - `7080` — Temporal UI
-- `7082` — CD-service API
 - `7233` — Temporal Server (gRPC)
+- API `7082` is **container-only** — Traefik fronts it. For ad-hoc curl
+  from the Mac host, drop a gitignored `docker-compose.override.yaml`
+  that re-adds `ports: ["7082:7082"]` for `api`.
 - Host `5432` and `9200` intentionally **free** for SMC's own future Postgres / search.
 
-> Changing the API port means editing **five aligned places**:
-> `docker-compose.yaml` (`ports:` and `PORT=` env), `Dockerfile`'s `EXPOSE`,
+> Changing the API port means editing **four aligned places**:
+> `docker-compose.yaml`'s `PORT=` env on the api service + the
+> `loadbalancer.server.port` Traefik label, `Dockerfile`'s `EXPOSE`,
 > `config.example.yaml`'s `server.port`, and the fallback in
-> `internal/config/config.go`. All five currently agree on `7082`.
+> `internal/config/config.go`. All currently agree on `7082`.
 
-## Exposing the webhook to GitHub Actions (Cloudflare Tunnel)
+## Exposing the webhook to GitHub Actions (Traefik)
 
-The CD-service binds `:7082` on the SMC host's localhost. GitHub-hosted
-runners are not on that network, so they cannot POST the webhook
-directly. The POC's inbound path is a **Cloudflare Tunnel**:
+The CD-service binds `:7082` inside its container only — there is no
+host port mapping. The public path to it goes through **Traefik in the
+sibling SMC-Infra repo**:
 
 ```
 GitHub Actions runner
-        │  POST https://cd.<yourdomain>.xyz/api/webhook/deploy
+        │  POST https://cd.<domain>/api/webhook/deploy
         ▼
-Cloudflare edge ── tunnel ──► cloudflared (on SMC host) ──► cd-service:7082
-                                                          (internal Docker network)
+Cloudflare DNS (A → deploy host's public IP)
+        │
+        ▼
+Traefik (:443, LE wildcard cert via Cloudflare DNS-01)
+        │  shared external Docker network: smc-traefik
+        ▼
+api:7082  (this compose project)
 ```
 
-Why a tunnel: outbound-only registration means no public listener on
-the host; aligns with the Phase-1 Cloudflare plan in the parent SMC
-repo's CLAUDE.md. Full rationale in `ref/deploy_pipeline.md §2.4`.
+Why Traefik, not Cloudflare Tunnel: the deploy host has a public IP
+with `:80`/`:443` free, so the tunnel solves a problem we don't have
+and forfeits Traefik's native load-balancing and middleware ecosystem.
+Cloudflare Tunnel is preserved as a fallback playbook in SMC-Infra
+for the case where the host is temporarily unreachable.
 
 ### One-time setup
 
-1. Create a Cloudflare account, add a zone for your domain.
-2. Cloudflare Zero Trust → Networks → Tunnels → Create tunnel. Note the
-   tunnel token.
-3. In the tunnel's "Public hostnames" tab, route
-   `cd.<yourdomain>.xyz` → `http://cd-service:7082` (the service name on
-   the Docker network this compose file uses).
-4. Add the token to `.env` (gitignored):
+The edge lives in **SMC-Infra**, not here. SMC-CD-side prerequisites
+(already in `docker-compose.yaml`):
 
-   ```bash
-   CF_TUNNEL_TOKEN=eyJh...
-   ```
+- `api` joins networks `deployment-net`, `temporal-network`, `smc-traefik`.
+- Traefik labels on `api` route `Host(\`cd.${DOMAIN}\`)` to container
+  port `7082` via cert resolver `cloudflare`.
+- No `ports:` mapping on `api` — Traefik dials the container over the
+  shared network.
+- `.env` (gitignored) sets (`cd.${DOMAIN}` into the label rule).
 
-5. `make deploy` brings `cloudflared` up alongside `api` + `worker`.
-6. Verify from a laptop: `curl https://cd.<yourdomain>.xyz/api/healthz`.
+Verify from a laptop once Traefik is up:
+
+```bash
+curl -i https://cd.domain/api/healthz
+```
 
 ### GitHub repository secrets (set in SMC, not SMC-CD)
 
-- `SMC_WEBHOOK_URL` = `https://cd.<yourdomain>.xyz/api/webhook/deploy`
+- `SMC_WEBHOOK_URL` = `https://cd.domain/api/webhook/deploy`
 - `SMC_DEPLOY_TOKEN` = (see "Generating a deploy token" below)
 
 A `Notify` job in SMC's `frontend-dev.yaml` / `backend-dev.yaml` reads
-these and POSTs the payload above.
+these and POSTs the payload below.
 
 ### Authentication note
 
-`cd.<yourdomain>.xyz` is **not** behind Cloudflare Access in the POC.
-Access would block GH Actions (no OIDC identity at the edge). The
+`cd.domain` is **not** behind Cloudflare Access. Access would block GH Actions (no OIDC identity at the edge). The
 webhook is gated by `x-deploy-token` only — keep that token narrow and
 rotate on leak. Cloudflare Access remains the right answer for
-human-facing tools (Temporal UI, pgAdmin) per parent CLAUDE.md.
+human-facing tools (Temporal UI, pgAdmin, Grafana, …) per parent
+CLAUDE.md / SMC-Infra Step 7.
 
 ### Generating a deploy token
 
@@ -246,11 +259,11 @@ python3 -c 'import secrets; print(secrets.token_hex(32))'  # if no openssl
 If these three drift apart, every CI request gets a silent 401. Rotate
 by generating a new value and updating all three at once.
 
-**Local-only shortcut (POC).** For the row 0.6 localhost smoke test you
-do not need a real secret — set `auth.deploy_token: "your-deploy-token-here"`
-in your local `config.yaml` and pass the same literal string to
+**Local-only shortcut.** For a localhost smoke test you do not need a
+real secret — set `auth.deploy_token: "your-deploy-token-here"` in
+your local `config.yaml` and pass the same literal string to
 `make send-deploy DEPLOY_TOKEN=your-deploy-token-here`. Roll a real
-`openssl rand -hex 32` value before row 0.8 (push to GitHub) and before
+`openssl rand -hex 32` value before pushing to GitHub and before
 exposing `cd.<yourdomain>.xyz` publicly through Traefik.
 
 Treat the token like a password: never commit it, never paste it into
@@ -266,7 +279,7 @@ Deploy or cleanup a service.
 
 - `x-deploy-token`: authentication token
 
-**Request body (POC form — `inject_secret` and `setup_domain` are accepted but no-op):**
+**Request body**
 
 ```json
 {
@@ -329,8 +342,8 @@ Health check endpoint.
 When the code or compose files under `deploy/` change, the operator
 (whoever holds the host SSH key) updates the running CD-service by hand.
 This pipeline does **not** auto-deploy itself, by design — the deployer
-cannot orchestrate its own upgrade safely (see
-`ref/deploy_pipeline.md §2`).
+cannot orchestrate its own upgrade safely (Temporal can't deploy the
+Temporal stack while it's in the middle of going down).
 
 ```bash
 ssh <smc-host>
@@ -425,6 +438,14 @@ Build / local-run (Go binaries, no Docker):
 - `make run-worker`        — run Worker locally
 - `make clean`             — remove built binaries
 
+All-in-Docker lifecycle (dev or prod host):
+
+- `make cd-up`             — `net-init` + `temporal-up` (project=`smc-temporal`, `compose --wait`) + `cd-service-up` + `healthz`
+- `make cd-down`           — stop `api`/`worker`, then the Temporal stack
+- `make net-init`          — idempotently create the `smc-traefik` external network
+- `make temporal-up`       — bring up the Temporal stack only (waits for `temporal` healthcheck)
+- `make cd-service-up`     — bring up `api` + `worker` only
+
 Operator targets (run on the SMC host):
 
 - `make deploy`            — `deploy-temporal` + `deploy-cd-service` + `healthz`
@@ -434,7 +455,7 @@ Operator targets (run on the SMC host):
 - `make deploy-worker`     — same, scoped to `worker`
 - `make logs [SERVICE=…]`  — tail container logs
 - `make ps`                — list containers across both compose files
-- `make healthz`           — probe `/api/healthz` with retries
+- `make healthz`           — probe `/api/healthz` from inside `deployment-api` with retries
 
 Webhook test targets (exercise a running CD-service):
 
@@ -449,23 +470,23 @@ Temporal is a **durable execution engine** — a workflow orchestrator that
 guarantees a multi-step process runs to completion, even if machines crash.
 
 ```
-                    ┌──────────────────────────────────┐
+                    ┌───────────────────────────────────┐
                     │        Temporal Server            │
                     │  (PostgreSQL + Elasticsearch)     │
                     │                                   │
                     │  Stores workflow state, handles   │
                     │  retries, timeouts, scheduling    │
-                    └──────────┬───────────┬────────────┘
-                               │           │
-                    ┌──────────▼──┐  ┌─────▼──────────┐
-                    │   API Server │  │   Worker        │
-                    │  (cmd/api)   │  │  (cmd/worker)   │
+                    └─────────┬─────────────┬───────────┘
+                              │             │
+                    ┌─────────▼────┐  ┌─────▼────────────┐
+                    │   API Server │  │   Worker         │
+                    │  (cmd/api)   │  │  (cmd/worker)    │
                     │              │  │                  │
                     │  Receives    │  │  Polls Temporal  │
                     │  webhooks,   │  │  for tasks,      │
                     │  starts      │  │  executes        │
                     │  workflows   │  │  activities      │
-                    └──────────────┘  └─────────────────┘
+                    └──────────────┘  └──────────────────┘
 ```
 
 ### Key Temporal Concepts
@@ -487,7 +508,7 @@ guarantees a multi-step process runs to completion, even if machines crash.
 
 ---
 
-### Request Flow (End to End — POC variant)
+### Request Flow (Current End to End)
 
 ```
 CI / Manual Trigger          API Server                 Temporal Server           Worker
@@ -530,9 +551,9 @@ CI / Manual Trigger          API Server                 Temporal Server         
 
 ### Steps
 
-#### Step 1: Fetch Secrets — **NO-OP in POC**
+#### Step 1: Fetch Secrets — **NO-OP yet**
 
-Upstream calls Infisical; in the POC the activity returns an empty map
+Upstream calls Infisical; in the activity returns an empty map
 without making any network call. `setup.inject_secret.enable=true` payloads
 are accepted but produce no secrets. Phase 1 plug-in point: re-add
 `internal/adapter/infisical/` and the activity body.
@@ -547,13 +568,11 @@ are accepted but produce no secrets. Phase 1 plug-in point: re-add
   4. `cd repo/.deploy/{environment}/` and execute `deploy.sh` with injected env vars
   5. Clean up temp dir
 - **Cleanup flow**: if deploy dir exists, run `cleanup.sh`, then remove temp dir
-- **Secrets are passed as env vars** to the deploy/cleanup scripts (empty map in the POC)
+- **Secrets are passed as env vars** to the deploy/cleanup scripts (empty map now)
 
-#### Step 3: DNS — **NO-OP in POC**
+#### Step 3: DNS — **NO-OP now**
 
-Upstream upserts/removes Cloudflare DNS records; in the POC the activity
-is a no-op regardless of `post.setup_domain.enable`. Phase 1 plug-in
-point: re-add `internal/adapter/cloudflare/`.
+Upstream upserts/removes Cloudflare DNS records.
 
 #### Step 4: Discord Notification (Optional)
 
@@ -564,7 +583,7 @@ point: re-add `internal/adapter/cloudflare/`.
 
 ---
 
-### Hexagonal Architecture (Ports & Adapters — POC)
+### Hexagonal Architecture (Ports & Adapters)
 
 ```
                   ┌─────────────────────────────────┐
@@ -594,7 +613,7 @@ Phase 1 work re-introduces them behind the same `SecretManager` /
 
 ---
 
-### External Service Dependencies (POC)
+### External Service Dependencies
 
 | Service | Purpose | Config |
 |---------|---------|--------|
@@ -625,10 +644,10 @@ DeployRequest
 │   ├── component       # Component (e.g., "frontend", "backend")
 │   └── environment     # "snapshot" | "dev" | "stage" | "production"
 ├── setup
-│   └── inject_secret   # Accepted, no-op in POC
+│   └── inject_secret   # Accepted, no-op now
 ├── post
-│   ├── setup_domain    # Accepted, no-op in POC
-│   ├── cleanup_domain  # Accepted, no-op in POC
+│   ├── setup_domain    # Accepted, no-op now
+│   ├── cleanup_domain  # Accepted, no-op now
 │   └── notify_discord  # Discord notification toggle
 └── trace_id            # Auto-generated UUID (server-side)
 ```
@@ -644,35 +663,29 @@ DeployRequest
 - `config.yaml` created from `config.example.yaml`
 - Discord bot token and channel ID (for notification testing)
 
-#### 1. Start Temporal Infrastructure
+#### 1. Bring up the full stack
 
 ```bash
-# Copy env file for Docker image versions
-cp .env.example .env
-
-# Start Temporal Server + PostgreSQL + Elasticsearch + UI
-docker compose -f docker-compose.temporal.yaml up -d
-
-# Wait for it to be ready (check Temporal UI at http://localhost:7080)
+cp .env.example .env       # pins Docker image versions; also set DOMAIN=domain
+make cd-up                 # net-init → Temporal → api+worker → healthz
 ```
 
-#### 2. Start the API Server and Worker
+For the host-Go dev path instead (Go on host, only Temporal in Docker):
 
 ```bash
-# Terminal 1: Start API
-make run-api
-
-# Terminal 2: Start Worker
-make run-worker
+make temporal-up
+make run-api               # Terminal 1
+make run-worker            # Terminal 2
 ```
 
 #### 3. Send a Test Deploy Request
 
 ```bash
 # Using the Makefile (reads from webhook-payload.deploy.json)
-make deploy DEPLOY_TOKEN=your-deploy-token-here
+make send-deploy DEPLOY_TOKEN=your-deploy-token-here
 
-# Or using curl directly
+# Or using curl directly — only works if you've published :7082 via a
+# docker-compose.override.yaml, or are running api on the host via `make run-api`.
 curl -X POST http://localhost:7082/api/webhook/deploy \
   -H "Content-Type: application/json" \
   -H "x-deploy-token: your-deploy-token-here" \
@@ -762,9 +775,3 @@ Open <http://localhost:7080> in your browser to:
 - Click into a workflow to see each activity's input/output
 - View error details for failed activities
 - Check retry attempts and timing
-
----
-
-## Where decisions live
-
-- Root port table (frontend + temporal family): sibling `../SMC/README.md` §Ports.
