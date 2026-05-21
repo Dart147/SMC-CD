@@ -6,7 +6,6 @@ services:
     container_name: deployment-api
     command: ["/app/api"]
     ports:
-      # Host == container = 7082.
       - "7082:7082"
     env_file:
       - .env  # Load environment variables from .env file (optional, won't fail if missing)

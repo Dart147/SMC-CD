@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 	"go.uber.org/zap"
 )
@@ -89,10 +90,14 @@ func (h *WebhookHandler) HandleDeploy(w http.ResponseWriter, r *http.Request) {
 		TraceID:  traceID,
 	}
 
-	// Start workflow
+	// Start workflow. workflow_id is deterministic so Temporal dedups
+	// duplicate webhook deliveries (GitHub Actions retry, manual re-run)
+	workflowID := buildWorkflowID(payload)
 	workflowOptions := client.StartWorkflowOptions{
-		ID:        "deploy-" + traceID,
-		TaskQueue: "cd-task-queue",
+		ID:                       workflowID,
+		TaskQueue:                "cd-task-queue",
+		WorkflowIDReusePolicy:    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+		WorkflowIDConflictPolicy: enumspb.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
 	}
 
 	workflowRun, err := h.temporalClient.ExecuteWorkflow(ctx, workflowOptions, "CDWorkflow", deployReq)
@@ -120,6 +125,24 @@ func (h *WebhookHandler) HandleDeploy(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger.Error("Failed to encode response", zap.Error(err))
 	}
+}
+
+// buildWorkflowID returns a deterministic Temporal workflow_id derived from
+// the payload. Format:
+//	deploy:  <env>-<component>-<sha>-deploy
+//	cleanup: <env>-<component>-<pr_number>-cleanup
+// Identical payloads produce identical IDs, which Temporal then dedups
+// against running or recently-completed workflows.
+func buildWorkflowID(p DeployRequestPayload) string {
+	env := p.Metadata.Environment
+	component := p.Metadata.Component
+	method := string(p.Method)
+
+	key := p.Source.Commit
+	if p.Method == domain.MethodCleanup && p.Source.PRNumber != "" {
+		key = p.Source.PRNumber
+	}
+	return fmt.Sprintf("%s-%s-%s-%s", env, component, key, method)
 }
 
 // validateConditionalFields validates fields that are required conditionally

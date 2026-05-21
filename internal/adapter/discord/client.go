@@ -55,7 +55,7 @@ type WebhookPayload struct {
 }
 
 // SendNotification sends a notification to Discord
-func (c *Client) SendNotification(ctx context.Context, title, message string, success bool, metadata map[string]string) error {
+func (c *Client) SendNotification(ctx context.Context, title, message string, state domain.NotificationState, metadata map[string]string) error {
 	if c.botToken == "" {
 		return fmt.Errorf("discord bot token is empty (set DISCORD_BOT_TOKEN)")
 	}
@@ -64,9 +64,14 @@ func (c *Client) SendNotification(ctx context.Context, title, message string, su
 		return fmt.Errorf("discord default channel id is empty (set DISCORD_DEFAULT_CHANNEL_ID)")
 	}
 
-	color := 0x00FF00 // Green for success
-	if !success {
-		color = 0xFF0000 // Red for failure
+	var color int
+	switch state {
+	case domain.NotificationStateCleanup:
+		color = 0x3498DB // Blue — cleanup completed (distinct from a real deploy)
+	case domain.NotificationStateFailure:
+		color = 0xFF0000 // Red
+	default:
+		color = 0x00FF00 // Green for success
 	}
 
 	// fields := make([]Field, 0, len(metadata))
@@ -129,7 +134,7 @@ func (c *Client) SendNotification(ctx context.Context, title, message string, su
 
 	c.logger.Info("Discord notification sent",
 		zap.String("title", title),
-		zap.Bool("success", success),
+		zap.String("state", string(state)),
 		zap.String("channel_id", c.defaultChannelID),
 	)
 

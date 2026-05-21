@@ -56,7 +56,11 @@ func CDWorkflow(ctx workflow.Context, req domain.DeployRequest) error {
 	// Temporary short-circuit: exercise the Discord path before SSH is ready.
 	if req.Post.NotifyDiscord.NotifyOnly {
 		logger.Info("notify_only=true → skipping secrets/SSH/DNS, running Discord only")
-		if err := workflow.ExecuteActivity(ctx, activity.ActivitySendDiscordNotification, req, "Deployment Successful", "").Get(ctx, nil); err != nil {
+		title := "Deployment Successful"
+		if req.Method == domain.MethodCleanup {
+			title = "Cleanup Complete"
+		}
+		if err := workflow.ExecuteActivity(ctx, activity.ActivitySendDiscordNotification, req, title, "").Get(ctx, nil); err != nil {
 			logger.Error("notify-only discord activity failed", "error", err)
 			return err
 		}

@@ -3,18 +3,19 @@
     "title": "SMC Frontend",
     "repo": "Dart147/SMC",
     "branch": "main",
-    "commit": "jwijgoj",
-    "pr_number": "927",
-    "pr_title": "[SMC-123] Notification Fail Test",
+    "commit": "jewiohfih",
+    "pr_number": "147",
+    "pr_title": "CD cleanup test",
     "pr_type": "Test",
-    "pr_purpose": "Test CD workflow"
+    "pr_purpose": "Test CD cleanup workflow"
   },
-  "method": "deploy",
+  "method": "cleanup",
   "metadata": {
     "project_name": "SMC",
-    "component": "frontend",
-    "environment": "dev"
+    "component": "backend",
+    "environment": "stage"
   },
+  
   "setup": {
     "inject_secret": {
       "enable": false

@@ -28,7 +28,14 @@ func NewNotifyActivity(notifier domain.Notifier, logger *zap.Logger) *NotifyActi
 func (a *NotifyActivity) SendDiscordNotification(ctx context.Context, req domain.DeployRequest, status string, errMsg string) error {
 	logger := activity.GetLogger(ctx)
 
-	success := errMsg == ""
+	state := domain.NotificationStateSuccess
+	switch {
+	case errMsg != "":
+		state = domain.NotificationStateFailure
+	case req.Method == domain.MethodCleanup:
+		state = domain.NotificationStateCleanup
+	}
+
 	title := status
 	message := fmt.Sprintf("%s for %s", status, req.Metadata.ProjectName)
 
@@ -51,13 +58,13 @@ func (a *NotifyActivity) SendDiscordNotification(ctx context.Context, req domain
 
 	logger.Info("Sending Discord notification",
 		zap.String("title", title),
-		zap.Bool("success", success),
+		zap.String("state", string(state)),
 		zap.String("project", req.Metadata.ProjectName),
 		zap.String("environment", req.Metadata.Environment),
 		zap.String("component", req.Metadata.Component),
 	)
 
-	if notifyErr := a.notifier.SendNotification(ctx, title, message, success, metadata); notifyErr != nil {
+	if notifyErr := a.notifier.SendNotification(ctx, title, message, state, metadata); notifyErr != nil {
 		logger.Error("Failed to send Discord notification",
 			zap.Error(notifyErr),
 			zap.String("title", title),
@@ -70,7 +77,7 @@ func (a *NotifyActivity) SendDiscordNotification(ctx context.Context, req domain
 
 	logger.Info("Discord notification sent successfully",
 		zap.String("title", title),
-		zap.Bool("success", success),
+		zap.String("state", string(state)),
 		zap.String("project", req.Metadata.ProjectName),
 	)
 
