@@ -1,0 +1,36 @@
+{
+  "source": {
+    "title": "SMC Frontend",
+    "repo": "lovetsmc/SMC",
+    "branch": "main",
+    "commit": "0000000000000000000000000000000000000000",
+    "pr_number": "0",
+    "pr_title": "[SMC-0] notify-only smoke test",
+    "pr_type": "Test",
+    "pr_purpose": "Local smoke test of the notify-only short-circuit."
+  },
+  "method": "deploy",
+  "metadata": {
+    "project_name": "smc",
+    "component": "frontend",
+    "environment": "dev"
+  },
+  "setup": {
+    "inject_secret": {
+      "enable": false
+    }
+  },
+  "post": {
+    "setup_domain": {
+      "enable": false
+    },
+    "cleanup_domain": {
+      "enable": false
+    },
+    "notify_discord": {
+      "enable": true,
+      "notify_only": true,
+      "channel": "smc-activity"
+    }
+  }
+}

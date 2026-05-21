@@ -1,0 +1,43 @@
+.env
+.secrets
+config.yaml
+bin/
+ref/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+.venv
+node_modules
+dist
+dist-ssr
+*.local
+
+# Claude Code
+.claude/settings.local.json
+.gitconfig-temp
+.claude/
+CLAUDE.md
+
+# Test artifacts
+playwright-report/
+test-results/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+backend/db/postgres_data/

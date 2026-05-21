@@ -1,0 +1,52 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deployment-api
+    command: ["/app/api"]
+    ports:
+      # Host == container = 7082.
+      - "7082:7082"
+    env_file:
+      - .env  # Load environment variables from .env file (optional, won't fail if missing)
+    environment:
+      # Override Temporal address for Docker container networking
+      - TEMPORAL_ADDRESS=temporal:7233
+      - HOST=0.0.0.0
+      - PORT=7082
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro  # Mount config.yaml file
+    networks:
+      - deployment-net
+      - temporal-network
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deployment-worker
+    command: ["/app/worker"]
+    env_file:
+      - .env  # Load environment variables from .env file (optional, won't fail if missing)
+    environment:
+      # Override Temporal address for Docker container networking
+      - TEMPORAL_ADDRESS=temporal:7233
+      # Override server host/port for Docker container networking
+      # Bind to 0.0.0.0 to accept connections from outside the container
+      - HOST=0.0.0.0
+      - PORT=7082
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro  # Mount config.yaml file
+    networks:
+      - deployment-net
+      - temporal-network
+    restart: unless-stopped
+
+networks:
+  deployment-net:
+    driver: bridge
+  temporal-network:
+    external: true
+    name: temporal-network

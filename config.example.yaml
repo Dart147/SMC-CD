@@ -1,0 +1,41 @@
+# Deployment Service Configuration
+
+# Server configuration
+# Port aligned with docker-compose.yaml (ports: "7082:7082", PORT=7082)
+
+server:
+  host: "localhost"
+  port: "7082"
+
+# Temporal configuration
+temporal:
+  address: "localhost:7233"
+  namespace: "default"
+
+# Authentication
+auth:
+  deploy_token: "your-deploy-token-here"
+
+# Discord notification configuration
+discord:
+  webhook_url: ""
+
+# OpenTelemetry configuration
+otel:
+  collector_url: ""
+
+# Logger configuration
+logger:
+  level: "info"  # debug, info, warn, error
+  format: "json" # json, console
+
+# SSH configuration
+ssh:
+  host: "localhost"
+  port: 22
+  user: "deploy"
+  base_path: "/tmp"
+  # SSH private key - must be set via private_key (environment variable SSH_PRIVATE_KEY or config)
+  private_key: ""  # SSH private key content (multiline supported in YAML, set via SSH_PRIVATE_KEY env var)
+  known_hosts_file: ""  # Default: ~/.ssh/known_hosts
+  strict_host_key_checking: true  # Set to false only for development
