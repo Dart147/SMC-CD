@@ -8,6 +8,7 @@ CD_COMPOSE       = docker-compose.yaml
 HEALTHZ_URL      = http://localhost:7082/api/healthz
 TEMPORAL_PROJECT = smc-temporal
 TRAEFIK_NETWORK  = smc-traefik
+TEMPORAL_NETWORK = temporal-network
 
 # ---------------------------------------------------------------------------
 # Default target
@@ -95,7 +96,7 @@ healthz:
 # the right order (Temporal first, then api+worker)
 # ---------------------------------------------------------------------------
 
-cd-up: net-init temporal-up cd-service-up healthz
+cd-up: net-init temporal-up namespace-init cd-service-up healthz
 	@echo -e "==> $(BLUE)Stack up.$(NC)"
 	@echo -e "    api      : reachable only inside the smc-traefik / temporal-network Docker networks"
 	@echo -e "               (probe with: docker exec deployment-api wget -qO- http://localhost:7082/api/healthz)"
@@ -110,11 +111,27 @@ cd-down:
 net-init:
 	@docker network inspect $(TRAEFIK_NETWORK) >/dev/null 2>&1 \
 		|| docker network create $(TRAEFIK_NETWORK)
+	@docker network inspect $(TEMPORAL_NETWORK) >/dev/null 2>&1 \
+		|| docker network create $(TEMPORAL_NETWORK)
 
 temporal-up:
 	@echo -e ":: $(GREEN)Starting Temporal stack (project=$(TEMPORAL_PROJECT))...$(NC)"
 	@docker compose -f $(TEMPORAL_COMPOSE) -p $(TEMPORAL_PROJECT) up -d --wait temporal temporal-ui
 	@echo -e "==> $(BLUE)Temporal ready (server healthy per compose)$(NC)"
+
+namespace-init:
+	@echo -e ":: $(GREEN)Ensuring Temporal 'default' namespace exists...$(NC)"
+	@docker compose -f $(TEMPORAL_COMPOSE) -p $(TEMPORAL_PROJECT) run --rm --no-deps \
+		--entrypoint /usr/local/bin/temporal temporal-admin-tools \
+		operator namespace describe --namespace default --address temporal:7233 \
+		>/dev/null 2>&1 \
+		&& echo -e "==> $(BLUE)namespace 'default' already registered$(NC)" \
+		|| ( \
+			echo -e "  registering namespace 'default'..."; \
+			docker compose -f $(TEMPORAL_COMPOSE) -p $(TEMPORAL_PROJECT) run --rm --no-deps \
+				--entrypoint /usr/local/bin/temporal temporal-admin-tools \
+				operator namespace create --namespace default --retention 24h --address temporal:7233 \
+		)
 
 cd-service-up:
 	@echo -e ":: $(GREEN)Starting CD-service api + worker...$(NC)"
@@ -141,4 +158,4 @@ send-cleanup:
 .PHONY: all prepare build build-api build-worker run-api run-worker clean \
 	deploy deploy-temporal deploy-cd-service deploy-api deploy-worker \
 	logs ps healthz send-deploy send-cleanup \
-	cd-up cd-down net-init temporal-up cd-service-up
+	cd-up cd-down net-init temporal-up cd-service-up namespace-init
