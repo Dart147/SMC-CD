@@ -347,7 +347,7 @@ Temporal stack while it's in the middle of going down).
 
 ```bash
 ssh <smc-host>
-cd /opt/smc/deploy
+cd ~/project_smc/SMC/deploy
 git pull --ff-only
 make deploy        # = deploy-temporal + deploy-cd-service + healthz
 ```
@@ -375,7 +375,7 @@ make healthz             # probe http://localhost:7082/api/healthz with retries
 Intentionally not a Makefile target — the operator picks the SHA:
 
 ```bash
-cd /opt/smc/deploy
+cd ~/project_smc/SMC/deploy
 git checkout <previous-sha>
 make deploy-cd-service
 make healthz
