@@ -51,6 +51,7 @@ services:
       - PORT=7082
     volumes:
       - ./config.yaml:/app/config.yaml:ro  # Mount config.yaml file
+      - ./secrets/known_hosts:/app/known_hosts:ro  # Mount known_hosts file for SSH
     networks:
       - deployment-net
       - temporal-network

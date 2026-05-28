@@ -3,6 +3,7 @@
 config.yaml
 bin/
 ref/
+secrets/
 
 # Logs
 logs
