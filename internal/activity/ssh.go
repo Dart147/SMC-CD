@@ -317,6 +317,12 @@ func (a *SSHActivity) buildScriptExecutionCommand(deployDir, scriptType string, 
 		fmt.Sprintf("ENVIRONMENT=%s", a.quoteShell(req.Metadata.Environment)),
 	}
 
+	// Point deploy.sh at the host's stable .env. Path lives in gitignored
+	// config (ssh.env_file), so it's never committed to the deployed repo.
+	if a.sshConfig.EnvFile != "" {
+		envVars = append(envVars, fmt.Sprintf("SMC_ENV_FILE=%s", a.quoteShell(a.sshConfig.EnvFile)))
+	}
+
 	// Add secrets as environment variables
 	for key, value := range secrets {
 		// Skip REPO_PRIVATE_KEY as it's handled separately

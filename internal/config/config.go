@@ -58,6 +58,10 @@ type SSHConfig struct {
 	PrivateKey            string `yaml:"private_key" envconfig:"SSH_PRIVATE_KEY"`
 	KnownHostsFile        string `yaml:"known_hosts_file" envconfig:"SSH_KNOWN_HOSTS_FILE"`
 	StrictHostKeyChecking bool   `yaml:"strict_host_key_checking" envconfig:"SSH_STRICT_HOST_KEY_CHECKING"`
+	// EnvFile is the absolute path on the target host to the stable .env that
+	// deploy.sh copies into the ephemeral clone. Injected as SMC_ENV_FILE so the
+	// host path stays in gitignored config, never in the deployed repo.
+	EnvFile string `yaml:"env_file" envconfig:"SSH_ENV_FILE"`
 }
 
 func Load() (*Config, error) {
@@ -82,6 +86,7 @@ func Load() (*Config, error) {
 			PrivateKey:            "",
 			KnownHostsFile:        "",
 			StrictHostKeyChecking: true,
+			EnvFile:               "",
 		},
 	}
 
@@ -172,6 +177,9 @@ func loadFromFile(filePath string, config *Config) error {
 	if fileConfig.SSH.KnownHostsFile != "" {
 		config.SSH.KnownHostsFile = fileConfig.SSH.KnownHostsFile
 	}
+	if fileConfig.SSH.EnvFile != "" {
+		config.SSH.EnvFile = fileConfig.SSH.EnvFile
+	}
 	// StrictHostKeyChecking: check if SSH config exists (non-zero value struct)
 	// If SSH config exists in file, use its value
 	if fileConfig.SSH.Host != "" || fileConfig.SSH.User != "" {
@@ -231,6 +239,9 @@ func loadFromEnv(config *Config) {
 	}
 	if knownHostsFile := os.Getenv("SSH_KNOWN_HOSTS_FILE"); knownHostsFile != "" {
 		config.SSH.KnownHostsFile = knownHostsFile
+	}
+	if envFile := os.Getenv("SSH_ENV_FILE"); envFile != "" {
+		config.SSH.EnvFile = envFile
 	}
 	if privateKey := os.Getenv("SSH_PRIVATE_KEY"); privateKey != "" {
 		config.SSH.PrivateKey = privateKey

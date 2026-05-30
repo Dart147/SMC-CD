@@ -39,3 +39,6 @@ ssh:
   private_key: ""  # SSH private key content (multiline supported in YAML, set via SSH_PRIVATE_KEY env var)
   known_hosts_file: ""  # Default: ~/.ssh/known_hosts
   strict_host_key_checking: true  # Set to false only for development
+  # Absolute path on the target host to the stable .env that deploy.sh copies
+  # into the ephemeral clone.
+  env_file: ""
