@@ -144,11 +144,23 @@ services:
     image: temporalio/ui:${TEMPORAL_UI_VERSION}
     networks:
       - temporal-network
+      - smc-traefik
     ports:
-      - "7080:7080"
+      # map UI port to localhost only
+      - "127.0.0.1:7080:7080"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=smc-traefik"
+      - "traefik.http.routers.temporal.rule=Host(`temporal.${DOMAIN}`)"
+      - "traefik.http.routers.temporal.entrypoints=websecure"
+      - "traefik.http.routers.temporal.tls.certresolver=cloudflare"
+      - "traefik.http.services.temporal.loadbalancer.server.port=7080"
 
 networks:
   temporal-network:
     external: true
     driver: bridge
     name: temporal-network
+  smc-traefik:
+    external: true
+    name: smc-traefik
