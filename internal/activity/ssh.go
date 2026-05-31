@@ -1,14 +1,16 @@
 package activity
 
 import (
+	"context"
+	"encoding/pem"
+	"fmt"
 	"github.com/Dart147/SMC/deploy/internal/config"
 	"github.com/Dart147/SMC/deploy/internal/domain"
-	"context"
-	"fmt"
 	"strings"
 
 	"go.temporal.io/sdk/activity"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/ssh"
 )
 
 // SSHActivity handles SSH deployment activities
@@ -221,20 +223,42 @@ func (a *SSHActivity) buildCleanupCommand(req domain.DeployRequest, secrets map[
 	return strings.Join(commands, " && ")
 }
 
-// getSSHPrivateKey retrieves SSH private key from config
+// getSSHPrivateKey retrieves and validates the SSH private key from config.
+// It does NOT just check for substrings
 func (a *SSHActivity) getSSHPrivateKey() ([]byte, error) {
 	if a.sshConfig.PrivateKey == "" {
-		return nil, fmt.Errorf("no SSH private key configured (set via SSH_PRIVATE_KEY environment variable or config file)")
+		return nil, fmt.Errorf("no SSH private key is configured. Set it in config.yaml under ssh.private_key (use a YAML '|' block and paste the whole key file), or via the SSH_PRIVATE_KEY environment variable")
 	}
 
+	// Trim only the outer whitespace; the inner newlines must stay intact.
 	privateKeyStr := strings.TrimSpace(a.sshConfig.PrivateKey)
+	keyBytes := []byte(privateKeyStr)
 
-	// Check if it looks like a valid SSH private key (should contain BEGIN/END markers)
+	// 1. Structural check: proper BEGIN/END lines on their own lines.
 	if !strings.Contains(privateKeyStr, "BEGIN") || !strings.Contains(privateKeyStr, "END") {
-		return nil, fmt.Errorf("invalid SSH private key format: key must contain BEGIN and END markers. Current value appears to be a placeholder or invalid format")
+		return nil, fmt.Errorf("the SSH private key does not look like a key at all — it is missing the '-----BEGIN ...-----' / '-----END ...-----' lines. The value in config.yaml is probably still the empty placeholder or got truncated")
+	}
+	if !strings.Contains(privateKeyStr, "\n") {
+		return nil, fmt.Errorf("the SSH private key is all on one line — its newlines were lost. In config.yaml use a YAML literal block:\n  ssh:\n    private_key: |\n      -----BEGIN OPENSSH PRIVATE KEY-----\n      <base64 lines exactly as in the key file>\n      -----END OPENSSH PRIVATE KEY-----\nand paste the key verbatim (no '\\n', no surrounding quotes)")
 	}
 
-	return []byte(privateKeyStr), nil
+	// 2. Decode: fails when there is a trailing space after the
+	//    '-----' marker or a missing final newline after the END line.
+	block, _ := pem.Decode(keyBytes)
+	if block == nil {
+		return nil, fmt.Errorf("the SSH private key could not be decoded as PEM. Usual causes: a stray space right after '-----BEGIN ... KEY-----' or '-----END ... KEY-----' (the line must end in '-----' with nothing after it), a missing newline after the END line, or a leading space on the base64 body lines. Re-paste the key with no extra spaces and a trailing newline")
+	}
+
+	// 3. Final proof: ask the SSH library to actually build a signer. This also
+	//    catches an encrypted (passphrase-protected) key
+	if _, err := ssh.ParsePrivateKey(keyBytes); err != nil {
+		if strings.Contains(err.Error(), "protected") || strings.Contains(err.Error(), "passphrase") || strings.Contains(err.Error(), "encrypted") {
+			return nil, fmt.Errorf("the SSH private key is passphrase-protected, which this deployer cannot use. Generate a dedicated deploy key with no passphrase (ssh-keygen -t ed25519 -N \"\") and use that instead: %w", err)
+		}
+		return nil, fmt.Errorf("the SSH private key has the right PEM shape but the SSH library rejected its contents (it may be corrupted, partially pasted, or not an SSH key). Re-copy the entire key file from BEGIN to END: %w", err)
+	}
+
+	return keyBytes, nil
 }
 
 // buildRepoURL builds the repository URL based on whether it's private or public
