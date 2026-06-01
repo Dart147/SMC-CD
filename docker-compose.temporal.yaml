@@ -155,6 +155,7 @@ services:
       - "traefik.http.routers.temporal.entrypoints=websecure"
       - "traefik.http.routers.temporal.tls.certresolver=cloudflare"
       - "traefik.http.services.temporal.loadbalancer.server.port=7080"
+      - "traefik.http.routers.temporal.middlewares=vpn-only@file"
 
 networks:
   temporal-network:
