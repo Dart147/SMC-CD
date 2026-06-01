@@ -1,17 +1,18 @@
 package ssh
 
 import (
-	"github.com/Dart147/SMC/deploy/internal/config"
-	"github.com/Dart147/SMC/deploy/internal/domain"
 	"context"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/Dart147/SMC/deploy/internal/config"
+	"github.com/Dart147/SMC/deploy/internal/domain"
+
+	"github.com/skeema/knownhosts"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // Client implements domain.SSHExecutor interface
@@ -36,18 +37,23 @@ func (c *Client) Execute(ctx context.Context, host string, user string, privateK
 		return "", fmt.Errorf("failed to parse private key: %w", err)
 	}
 
-	// Create host key callback
-	hostKeyCallback, err := c.createHostKeyCallback()
+	// Create host key callback. hostKeyAlgorithms constrains the host-key
+	// algorithms offered during the handshake to the types we have
+	// recorded for this host. Without it, a server that presents multiple host
+	// keys (RSA + ECDSA + ED25519) can negotiate a type we did not record,
+	// which surfaces as a misleading "knownhosts: key mismatch".
+	hostKeyCallback, hostKeyAlgorithms, err := c.createHostKeyCallback(host)
 	if err != nil {
 		return "", fmt.Errorf("failed to create host key callback: %w", err)
 	}
 
 	// Create SSH client config
 	sshConfig := &ssh.ClientConfig{
-		User:            user,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         30 * time.Second,
+		User:              user,
+		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback:   hostKeyCallback,
+		HostKeyAlgorithms: hostKeyAlgorithms,
+		Timeout:           30 * time.Second,
 	}
 
 	// Connect to SSH server
@@ -105,18 +111,6 @@ func (c *Client) Execute(ctx context.Context, host string, user string, privateK
 }
 
 func (c *Client) executeWithContext(ctx context.Context, session *ssh.Session, command string) (string, error) {
-	// Set up environment variables to ensure commands can be found
-	// Set PATH to include common binary locations
-	pathEnv := "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	if err := session.Setenv("PATH", pathEnv); err != nil {
-		// If Setenv fails, we'll include it in the command
-		c.logger.Debug("Failed to set PATH via Setenv, will include in command", zap.Error(err))
-	}
-
-	// Build command with explicit PATH and shell
-	// Use sh -c instead of bash -c for better compatibility
-	shellCommand := fmt.Sprintf("export PATH=%s && %s", pathEnv, command)
-
 	// Create a channel to receive output
 	type result struct {
 		output string
@@ -125,9 +119,8 @@ func (c *Client) executeWithContext(ctx context.Context, session *ssh.Session, c
 	resultChan := make(chan result, 1)
 
 	go func() {
-		// Use sh -c to execute the command in a proper shell environment
-		// This ensures commands like rm, git, cd are available
-		execCommand := fmt.Sprintf("sh -c %s", c.quoteCommand(shellCommand))
+		// Wrap in a shell with a guaranteed PATH so commands resolve.
+		execCommand := c.wrapCommand(command)
 		output, err := session.CombinedOutput(execCommand)
 		resultChan <- result{
 			output: string(output),
@@ -143,6 +136,20 @@ func (c *Client) executeWithContext(ctx context.Context, session *ssh.Session, c
 	}
 }
 
+// basePathPrefix is prepended to the remote PATH so coreutils (rm, mkdir, git,
+// …) resolve deterministically regardless of the login environment.
+const basePathPrefix = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// wrapCommand wraps a deploy command in an `sh -c` invocation with a guaranteed
+// PATH. It prepends basePathPrefix to the inherited PATH rather than replacing
+// it, so host-specific binary locations stay reachable — e.g. snap-installed
+// docker lives in /snap/bin, which is on the target's own PATH (via
+// /etc/environment) but not in basePathPrefix.
+func (c *Client) wrapCommand(command string) string {
+	shellCommand := fmt.Sprintf(`export PATH=%s:"$PATH" && %s`, basePathPrefix, command)
+	return fmt.Sprintf("sh -c %s", c.quoteCommand(shellCommand))
+}
+
 // quoteCommand properly quotes a command for sh -c
 func (c *Client) quoteCommand(command string) string {
 	// Escape single quotes by replacing ' with '\'' and wrapping in single quotes
@@ -150,11 +157,15 @@ func (c *Client) quoteCommand(command string) string {
 	return fmt.Sprintf("'%s'", escaped)
 }
 
-// createHostKeyCallback creates a host key callback based on configuration
-func (c *Client) createHostKeyCallback() (ssh.HostKeyCallback, error) {
+// createHostKeyCallback builds the SSH host verification callback plus the
+// allowed host-key algorithms for the given "ip:port" target. It loads (or
+// creates) the known_hosts file, then returns a callback that enforces those
+// records and an algorithm list limited to the keys we have stored for this host.
+func (c *Client) createHostKeyCallback(host string) (ssh.HostKeyCallback, []string, error) {
 	if !c.sshConfig.StrictHostKeyChecking {
 		c.logger.Warn("SSH strict host key checking is disabled - this is insecure and should only be used in development")
-		return ssh.InsecureIgnoreHostKey(), nil
+		// nil algorithms lets the SSH client fall back to its defaults.
+		return ssh.InsecureIgnoreHostKey(), nil, nil
 	}
 
 	// Use known_hosts file for host key verification
@@ -163,7 +174,7 @@ func (c *Client) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 		// Default to standard known_hosts location
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get user home directory: %w", err)
+			return nil, nil, fmt.Errorf("failed to get user home directory: %w", err)
 		}
 		knownHostsFile = fmt.Sprintf("%s/.ssh/known_hosts", homeDir)
 	}
@@ -175,16 +186,16 @@ func (c *Client) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 		)
 		// Create empty file if it doesn't exist
 		if err := os.WriteFile(knownHostsFile, []byte{}, 0644); err != nil {
-			return nil, fmt.Errorf("failed to create known_hosts file: %w", err)
+			return nil, nil, fmt.Errorf("failed to create known_hosts file: %w", err)
 		}
 	}
 
-	callback, err := knownhosts.New(knownHostsFile)
+	db, err := knownhosts.NewDB(knownHostsFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load known_hosts file: %w", err)
+		return nil, nil, fmt.Errorf("failed to load known_hosts file: %w", err)
 	}
 
-	return callback, nil
+	return db.HostKeyCallback(), db.HostKeyAlgorithms(host), nil
 }
 
 // sanitizeCommand removes sensitive information from command for logging
