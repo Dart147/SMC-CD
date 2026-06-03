@@ -8,6 +8,15 @@ type SSHExecutor interface {
 	Execute(ctx context.Context, host string, user string, privateKey []byte, command string, envVars map[string]string) (string, error)
 }
 
+// DNSProvider manages DNS records for per-PR preview hostnames.
+type DNSProvider interface {
+	// EnsureRecord ensures a DNS A record exists for domain pointing at ip.
+	EnsureRecord(ctx context.Context, domain, ip string) error
+
+	// RemoveRecord removes the DNS A record for domain (no-op if absent).
+	RemoveRecord(ctx context.Context, domain string) error
+}
+
 // NotificationState classifies a notification for color/styling purposes.
 // "success" → deploy succeeded (green)
 // "cleanup" → cleanup workflow finished (blue, distinct from a real deploy)

@@ -88,9 +88,38 @@ func CDWorkflow(ctx workflow.Context, req domain.DeployRequest) error {
 	}
 	logger.Info("SSH deployment completed successfully")
 
-	// Step 3: DNS (Cloudflare) — todo.
-	if req.Post.SetupDomain.Enable || req.Post.CleanupDomain.Enable {
-		logger.Info("post.setup_domain/cleanup_domain ignored — Cloudflare adapter not in POC scope")
+	// Step 3: Handle DNS (if enabled)
+	if req.Method == domain.MethodDeploy && req.Post.SetupDomain.Enable {
+		if req.Post.SetupDomain.Name != "" && req.Post.SetupDomain.Value != "" {
+			logger.Info("Setting up DNS record",
+				"name", req.Post.SetupDomain.Name,
+				"value", req.Post.SetupDomain.Value,
+			)
+			// Extract IP from value (if it's a service:port format, we'll need to resolve it)
+			// For now, assume value is an IP address
+			ip := req.Post.SetupDomain.Value
+			err := workflow.ExecuteActivity(ctx, activity.ActivityEnsureDNSRecord,
+				req.Post.SetupDomain.Name,
+				ip,
+			).Get(ctx, nil)
+			if err != nil {
+				// Fail the deploy: the DNS record the preview has to work
+				logger.Error("Failed to setup DNS record", "error", err)
+				if notifyErr := workflow.ExecuteActivity(ctx, activity.ActivitySendDiscordNotification, req, "Deployment Failed", extractRootCause(err)).Get(ctx, nil); notifyErr != nil {
+					logger.Error("Failed to send failure notification", "error", notifyErr)
+				}
+				return err
+			}
+		}
+	} else if req.Method == domain.MethodCleanup && req.Post.CleanupDomain.Enable {
+		if req.Post.CleanupDomain.Name != "" {
+			logger.Info("Cleaning up DNS record", "name", req.Post.CleanupDomain.Name)
+			err := workflow.ExecuteActivity(ctx, activity.ActivityRemoveDNSRecord, req.Post.CleanupDomain.Name).Get(ctx, nil)
+			if err != nil {
+				logger.Error("Failed to cleanup DNS record", "error", err)
+				// Don't fail the workflow if DNS cleanup fails, but log it
+			}
+		}
 	}
 
 	// Step 4: Send success notification

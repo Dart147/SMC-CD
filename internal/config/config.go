@@ -12,13 +12,14 @@ import (
 
 // Infisical and Cloudflare config blocks are todo
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Temporal TemporalConfig `yaml:"temporal"`
-	Auth     AuthConfig     `yaml:"auth"`
-	Discord  DiscordConfig  `yaml:"discord"`
-	OTEL     OTELConfig     `yaml:"otel"`
-	Logger   LoggerConfig   `yaml:"logger"`
-	SSH      SSHConfig      `yaml:"ssh"`
+	Server     ServerConfig     `yaml:"server"`
+	Temporal   TemporalConfig   `yaml:"temporal"`
+	Auth       AuthConfig       `yaml:"auth"`
+	Cloudflare CloudflareConfig `yaml:"cloudflare"`
+	Discord    DiscordConfig    `yaml:"discord"`
+	OTEL       OTELConfig       `yaml:"otel"`
+	Logger     LoggerConfig     `yaml:"logger"`
+	SSH        SSHConfig        `yaml:"ssh"`
 }
 
 type ServerConfig struct {
@@ -33,6 +34,11 @@ type TemporalConfig struct {
 
 type AuthConfig struct {
 	DeployToken string `yaml:"deploy_token" envconfig:"DEPLOY_TOKEN"`
+}
+
+type CloudflareConfig struct {
+	APIToken string `yaml:"api_token" envconfig:"CLOUDFLARE_API_TOKEN"`
+	ZoneID   string `yaml:"zone_id" envconfig:"CLOUDFLARE_ZONE_ID"`
 }
 
 type DiscordConfig struct {
@@ -141,6 +147,12 @@ func loadFromFile(filePath string, config *Config) error {
 	if fileConfig.Auth.DeployToken != "" {
 		config.Auth.DeployToken = fileConfig.Auth.DeployToken
 	}
+	if fileConfig.Cloudflare.APIToken != "" {
+		config.Cloudflare.APIToken = fileConfig.Cloudflare.APIToken
+	}
+	if fileConfig.Cloudflare.ZoneID != "" {
+		config.Cloudflare.ZoneID = fileConfig.Cloudflare.ZoneID
+	}
 	if fileConfig.Discord.WebhookURL != "" {
 		config.Discord.WebhookURL = fileConfig.Discord.WebhookURL
 	}
@@ -204,6 +216,12 @@ func loadFromEnv(config *Config) {
 	}
 	if token := os.Getenv("DEPLOY_TOKEN"); token != "" {
 		config.Auth.DeployToken = token
+	}
+	if apiToken := os.Getenv("CLOUDFLARE_API_TOKEN"); apiToken != "" {
+		config.Cloudflare.APIToken = apiToken
+	}
+	if zoneID := os.Getenv("CLOUDFLARE_ZONE_ID"); zoneID != "" {
+		config.Cloudflare.ZoneID = zoneID
 	}
 	if webhookURL := os.Getenv("DISCORD_WEBHOOK_URL"); webhookURL != "" {
 		config.Discord.WebhookURL = webhookURL
