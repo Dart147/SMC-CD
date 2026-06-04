@@ -16,6 +16,11 @@ temporal:
 auth:
   deploy_token: "your-deploy-token-here"
 
+# Cloudflare configuration
+cloudflare:
+  api_token: ""
+  zone_id: ""
+
 # Discord notification configuration
 discord:
   webhook_url: ""

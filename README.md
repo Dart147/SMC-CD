@@ -8,10 +8,10 @@ A webhook from GitHub Actions triggers a Temporal workflow to auto deploy, and p
 Hexagonal (ports & adapters): `CDWorkflow` depends on domain interfaces;
 adapters implement them.
 
-- **Domain** (`internal/domain`) — models + ports (`SSHExecutor`, `Notifier`)
+- **Domain** (`internal/domain`) — models + ports (`SSHExecutor`, `Notifier`, `DNSProvider`)
 - **Workflow** (`internal/workflow`) — Temporal orchestration (`CDWorkflow`)
 - **Activity** (`internal/activity`) — one retriable unit of work per step
-- **Adapter** (`internal/adapter`) — `ssh/`, `discord/`
+- **Adapter** (`internal/adapter`) — `ssh/`, `discord/`, `cloudflare/`
 - **API** (`internal/handler`, `internal/middleware`) — HTTP + auth
 
 ```
@@ -27,11 +27,32 @@ deploy/
 └── Dockerfile                     # EXPOSE 7082
 ```
 
-## Configuration
+## Pipeline
 
-Copy `config.example.yaml` → `config.yaml` (gitignored). The SSH private
-key goes in `ssh.private_key` as a YAML literal block (`|`), or the
-`SSH_PRIVATE_KEY` env var:
+```
+   GitHub Actions (SMC repo)
+   merge to main / PR open / PR close
+     │  build + push image (:dev or :pr-N)
+     │  POST https://cd.${DOMAIN}/api/webhook/deploy   (x-deploy-token)
+     ▼
+   Traefik  ──smc-traefik──▶  CD-service  api:7082
+     │  validate token → StartWorkflow → 202 Accepted
+     ▼
+   Temporal  ──cd-task-queue──▶  worker → CDWorkflow
+     ├─ 1. Fetch secrets        (no-op)
+     ├─ 2. SSH deploy / cleanup  → clone SMC on the host, run
+     │                             .deploy/<env>/{deploy,cleanup}.sh
+     ├─ 3. DNS (snapshot only)   → upsert/remove pr-N A-record on Cloudflare
+     └─ 4. Discord notify        → green (ok) / red (fail) embed
+```
+
+| Trigger | `method` / `environment` | DNS | What runs on the host |
+|---|---|---|---|
+| **dev** — merge to `main` | `deploy` / `dev` | `setup_domain.enable:false` | recreate the changed component (`--no-deps <component>`) |
+| **snapshot** — PR open | `deploy` / `snapshot` | `setup_domain.enable:true` | bring up the isolated `pr-N` stack; register `pr-N.${DOMAIN}` |
+| **cleanup** — PR close | `cleanup` / `snapshot` | `cleanup_domain.enable:true` | tear the `pr-N` stack down; remove the DNS record |
+
+## Configuration
 
 ```yaml
 ssh:
@@ -41,20 +62,24 @@ ssh:
     -----END OPENSSH PRIVATE KEY-----
 ```
 
-Copy `.env.example` → `.env` (gitignored) — only pins Docker image
-versions for the Temporal stack (`POSTGRESQL_VERSION`, `TEMPORAL_VERSION`, …)
-and sets `DOMAIN`.
-
 ### Deploy token
 
-The `x-deploy-token` header is checked by `internal/middleware/auth.go`
-against `auth.deploy_token` (`config.yaml`) or the `DEPLOY_TOKEN` env var
-(env wins). Generate one with `openssl rand -hex 32`. The **same value**
-must live in three places or every request 401s:
+The `x-deploy-token` header is checked by `internal/middleware/auth.go` against `auth.deploy_token` (`config.yaml`) or the `DEPLOY_TOKEN` env var. Generate one with `openssl rand -hex 32`. The **same value** must live in three places or every request 401s:
 
 - server — `config.yaml` `auth.deploy_token` (or `.env` `DEPLOY_TOKEN`)
 - smoke tests — `make send-deploy DEPLOY_TOKEN=<value>`
 - CI — SMC repo GitHub Actions secret `SMC_DEPLOY_TOKEN`
+
+### Cloudflare DNS (per-PR previews)
+
+Snapshot deploys register a per-PR A-record (`pr-N.${DOMAIN} → Server IP`) so the preview hostname resolves.
+Two values in `config.yaml`:
+
+```yaml
+cloudflare:
+  api_token: "" 
+  zone_id:   ""
+```
 
 ## Running locally
 
@@ -180,14 +205,21 @@ after 10 min; runs are inspectable in the UI.
 
 ### Workflow steps
 
-1. **Fetch secrets** — no-op (`setup.inject_secret` accepted, ignored).
-2. **SSH deploy / cleanup** — `internal/activity/ssh.go` →
-   `adapter/ssh/client.go`. Deploy: temp dir at
-   `/{base_path}/{environment}/{repo_name}/` → (private repo: write
-   `REPO_PRIVATE_KEY` to a temp SSH config) → `git clone --depth=1
-   --branch <branch>` (fallback: full clone + checkout commit) → run
-   `repo/.deploy/{environment}/deploy.sh` with env vars → clean up.
-   Cleanup runs `cleanup.sh` instead.
-3. **DNS** — no-op (`post.setup_domain` / `cleanup_domain` accepted, ignored).
-4. **Discord notify** — `discordgo` bot embed (green ok / red fail); a
-   failure in step 2 sends a red embed before returning.
+1. **Fetch secrets** — no-op
+2. **SSH deploy / cleanup**
+   `internal/activity/ssh.go` → `adapter/ssh/client.go`.
+   Executes commands via SSH on the target host:
+   - **Setup**: Creates a temporary directory at `/{base_path}/{environment}/{repo_name}/`. For private repos, it writes `REPO_PRIVATE_KEY` to a temp SSH config.
+   - **Clone**: Runs `git clone --depth=1 --branch <branch>`.
+   - **Deploy**: Runs `repo/.deploy/{environment}/deploy.sh` with injected environment variables.
+   - **Cleanup**: If triggered by a cleanup event, runs `cleanup.sh` instead to tear down the environment.
+3. **DNS**
+   `internal/activity/dns.go` → `adapter/cloudflare/client.go`.
+   Manages Cloudflare A-records and is controlled by `enable` flags in the payload:
+   - **Deploy** (`setup_domain.enable:true`): Creates or updates the A-record. Failures here will fail the entire workflow (red embed).
+   - **Cleanup** (`cleanup_domain.enable:true`): Removes the A-record. Failures here are only logged and do not stop the workflow.
+   - **Dev**: Sets `enable:false`, so the DNS step is skipped entirely.
+4. **Discord notify**
+   Sends a status update via a `discordgo` bot embed:
+   - **Success**: Sends a green embed when the workflow completes successfully.
+   - **Failure**: Sends a red embed if step 2 (SSH) or step 3 (DNS) fails, before terminating the workflow.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/Dart147/SMC/deploy/internal/activity"
+	"github.com/Dart147/SMC/deploy/internal/adapter/cloudflare"
 	"github.com/Dart147/SMC/deploy/internal/adapter/discord"
 	"github.com/Dart147/SMC/deploy/internal/adapter/ssh"
 	"github.com/Dart147/SMC/deploy/internal/config"
@@ -83,10 +84,12 @@ func main() {
 
 	// Create adapters (Infisical + Cloudflare stripped — see CLAUDE.md §POC scope)
 	sshClient := ssh.NewClient(cfg.SSH, zapLogger)
+	cloudflareClient := cloudflare.NewClient(cfg.Cloudflare.APIToken, cfg.Cloudflare.ZoneID, zapLogger)
 	discordClient := discord.NewClient(cfg.Discord.BotToken, cfg.Discord.DefaultChannelID, zapLogger)
 
 	// Create activities
 	sshActivity := activity.NewSSHActivity(sshClient, cfg.SSH, zapLogger)
+	dnsActivity := activity.NewDNSActivity(cloudflareClient, zapLogger)
 	notifyActivity := activity.NewNotifyActivity(discordClient, zapLogger)
 
 	// Create worker
@@ -97,6 +100,8 @@ func main() {
 
 	// Register activities
 	w.RegisterActivity(sshActivity.RunSSHDeploy)
+	w.RegisterActivity(dnsActivity.EnsureDNSRecord)
+	w.RegisterActivity(dnsActivity.RemoveDNSRecord)
 	w.RegisterActivity(notifyActivity.SendDiscordNotification)
 
 	zapLogger.Info("Worker registered, starting...")

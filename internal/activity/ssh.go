@@ -357,12 +357,22 @@ func (a *SSHActivity) buildScriptExecutionCommand(deployDir, scriptType string, 
 
 	// Build command
 	envPrefix := strings.Join(envVars, " ")
+
+	// Scope the deploy to the component that changed (e.g. "backend" /
+	// "frontend"), so deploy.sh runs `compose pull/up --no-deps <component>`
+	// for that one service instead of pulling and recreating the whole stack.
+	scriptArg := ""
+	if scriptType == "deploy" && req.Metadata.Component != "" {
+		scriptArg = " " + a.quoteShell(req.Metadata.Component)
+	}
+
 	return fmt.Sprintf(
-		"cd %s && chmod +x %s && %s bash ./%s",
+		"cd %s && chmod +x %s && %s bash ./%s%s",
 		deployDir,
 		scriptName,
 		envPrefix,
 		scriptName,
+		scriptArg,
 	)
 }
 
