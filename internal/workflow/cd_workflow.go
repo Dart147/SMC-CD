@@ -80,8 +80,11 @@ func CDWorkflow(ctx workflow.Context, req domain.DeployRequest) error {
 	err := workflow.ExecuteActivity(ctx, activity.ActivityRunSSHDeploy, req, secrets).Get(ctx, &deployOutput)
 	if err != nil {
 		logger.Error("SSH deployment failed", "error", err)
-		// Send failure notification
-		if notifyErr := workflow.ExecuteActivity(ctx, activity.ActivitySendDiscordNotification, req, "Deployment Failed", extractRootCause(err)).Get(ctx, nil); notifyErr != nil {
+		failTitle := "Deployment Failed"
+		if req.Method == domain.MethodCleanup {
+			failTitle = "Cleanup Failed"
+		}
+		if notifyErr := workflow.ExecuteActivity(ctx, activity.ActivitySendDiscordNotification, req, failTitle, extractRootCause(err)).Get(ctx, nil); notifyErr != nil {
 			logger.Error("Failed to send failure notification", "error", notifyErr)
 		}
 		return err
@@ -125,7 +128,11 @@ func CDWorkflow(ctx workflow.Context, req domain.DeployRequest) error {
 	// Step 4: Send success notification
 	if req.Post.NotifyDiscord.Enable {
 		logger.Info("Sending success notification")
-		if err := workflow.ExecuteActivity(ctx, activity.ActivitySendDiscordNotification, req, "Deployment Successful", "").Get(ctx, nil); err != nil {
+		successTitle := "Deployment Successful"
+		if req.Method == domain.MethodCleanup {
+			successTitle = "Cleanup Complete"
+		}
+		if err := workflow.ExecuteActivity(ctx, activity.ActivitySendDiscordNotification, req, successTitle, "").Get(ctx, nil); err != nil {
 			logger.Error("Failed to send success notification", "error", err)
 			// Don't fail the workflow if notification fails, but log it
 		}

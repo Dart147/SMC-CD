@@ -33,21 +33,24 @@ func NewSSHActivity(sshExecutor domain.SSHExecutor, sshConfig config.SSHConfig, 
 func (a *SSHActivity) RunSSHDeploy(ctx context.Context, req domain.DeployRequest, secrets map[string]string) (string, error) {
 	logger := activity.GetLogger(ctx)
 
-	// Validate request early to provide better error messages
+	// Validate fields needed by both deploy and cleanup. Branch/Commit are
+	// validated per-method below (deploy needs them; cleanup uses the main branch).
 	if req.Source.Repo == "" {
 		return "", fmt.Errorf("Source.Repo is required but was empty")
 	}
 	if req.Metadata.Environment == "" {
 		return "", fmt.Errorf("Metadata.Environment is required but was empty")
 	}
-	if req.Source.Branch == "" {
-		return "", fmt.Errorf("Source.Branch is required but was empty")
-	}
-	if req.Source.Commit == "" {
-		return "", fmt.Errorf("Source.Commit is required but was empty")
-	}
 	if a.sshConfig.BasePath == "" {
 		return "", fmt.Errorf("SSH BasePath is required but was empty")
+	}
+	if req.Method == domain.MethodDeploy {
+		if req.Source.Branch == "" {
+			return "", fmt.Errorf("Source.Branch is required but was empty")
+		}
+		if req.Source.Commit == "" {
+			return "", fmt.Errorf("Source.Commit is required but was empty")
+		}
 	}
 
 	logger.Info("Starting SSH deployment",
@@ -207,7 +210,25 @@ func (a *SSHActivity) buildCleanupCommand(req domain.DeployRequest, secrets map[
 	repoDir := fmt.Sprintf("%s/repo", tmpDir)
 	deployDir := fmt.Sprintf("%s/.deploy/%s", repoDir, req.Metadata.Environment)
 
+	hasPrivateKey := secrets["REPO_PRIVATE_KEY"] != ""
+	repoURL := a.buildRepoURL(req.Source.Repo, hasPrivateKey)
+
 	var commands []string
+
+	// Re-clone: deploy wipes tmpDir at the end, so without this the repo is
+	// gone at cleanup time and cleanup.sh never runs.
+	commands = append(commands, fmt.Sprintf("rm -rf %s", tmpDir))
+	commands = append(commands, fmt.Sprintf("mkdir -p %s", tmpDir))
+	commands = append(commands, fmt.Sprintf("cd %s", tmpDir))
+
+	// Setup SSH config for private repo if needed
+	if hasPrivateKey {
+		sshDir := fmt.Sprintf("%s/.ssh", tmpDir)
+		sshConfig := a.buildPrivateRepoSSHConfig(sshDir, secrets["REPO_PRIVATE_KEY"])
+		commands = append(commands, sshConfig...)
+	}
+
+	commands = append(commands, a.buildDefaultBranchCloneCommand(repoURL, hasPrivateKey, tmpDir))
 
 	// Build script execution command
 	scriptCmd := a.buildScriptExecutionCommand(deployDir, "cleanup", req, secrets)
@@ -221,6 +242,19 @@ func (a *SSHActivity) buildCleanupCommand(req domain.DeployRequest, secrets map[
 	commands = append(commands, fmt.Sprintf("rm -rf %s", tmpDir))
 
 	return strings.Join(commands, " && ")
+}
+
+// buildDefaultBranchCloneCommand downloads a copy of the repo's main branch
+// into a folder called "repo". Used by cleanup, which only needs the teardown
+// scripts and can't rely on the PR's branch still existing after it's closed.
+// --depth=1 grabs only the latest commit (no history) so it's quick.
+func (a *SSHActivity) buildDefaultBranchCloneCommand(repoURL string, hasPrivateKey bool, tmpDir string) string {
+	gitPrefix := ""
+	if hasPrivateKey {
+		sshDir := fmt.Sprintf("%s/.ssh", tmpDir)
+		gitPrefix = fmt.Sprintf("GIT_SSH_COMMAND=\"ssh -F %s/config\" ", sshDir)
+	}
+	return fmt.Sprintf("%sgit clone --depth=1 %s repo", gitPrefix, repoURL)
 }
 
 // getSSHPrivateKey retrieves and validates the SSH private key from config.
