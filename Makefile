@@ -9,6 +9,8 @@ HEALTHZ_URL      = http://localhost:7082/api/healthz
 TEMPORAL_PROJECT = smc-temporal
 TRAEFIK_NETWORK  = smc-traefik
 TEMPORAL_NETWORK = temporal-network
+IMAGE_API        = smc-cd-api
+IMAGE_WORKER     = smc-cd-worker
 
 # ---------------------------------------------------------------------------
 # Default target
@@ -65,13 +67,21 @@ deploy-temporal:
 
 deploy-cd-service: deploy-api deploy-worker
 
-deploy-api:
-	@echo -e ":: $(GREEN)Deploying CD-service API...$(NC)"
-	@docker compose -f $(CD_COMPOSE) up -d --no-deps --build api
+# Build the CD-service image with plain `docker build`, NOT
+# `docker compose --build`. api and worker are the same image, so build once
+# and tag both. This skips compose's buildx metadata-file step, which fails
+# under snap-confined Docker
+build-image:
+	@echo -e ":: $(GREEN)Building CD-service image...$(NC)"
+	@docker build -t $(IMAGE_API) -t $(IMAGE_WORKER) -f Dockerfile .
 
-deploy-worker:
+deploy-api: build-image
+	@echo -e ":: $(GREEN)Deploying CD-service API...$(NC)"
+	@docker compose -f $(CD_COMPOSE) up -d --no-deps api
+
+deploy-worker: build-image
 	@echo -e ":: $(GREEN)Deploying CD-service Worker...$(NC)"
-	@docker compose -f $(CD_COMPOSE) up -d --no-deps --build worker
+	@docker compose -f $(CD_COMPOSE) up -d --no-deps worker
 
 logs:
 	@docker compose -f $(CD_COMPOSE) logs -f $(SERVICE)
