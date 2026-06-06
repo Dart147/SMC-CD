@@ -9,6 +9,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: smc-cd-api  # tag matching Makefile IMAGE_API
     container_name: deployment-api
     command: ["/app/api"]
     env_file:
@@ -38,6 +39,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: smc-cd-worker  # tag matching Makefile IMAGE_WORKER
     container_name: deployment-worker
     command: ["/app/worker"]
     env_file:
